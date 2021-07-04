@@ -1,0 +1,849 @@
+#include "hspogg.as"                                  // 音を同時にならせるようにするプラグイン
+dmmini                                                // プラグイン初期化
+
+#define wx 640                                        // 画面の横幅
+#define wy 480                                        // 画面の横幅
+#define player_speed 6                                // 自機の移動スピード
+#define bullet_speed 30                               // 弾の移動スピード
+#define enemy_speed 5                                 // 敵の移動スピード
+#define enemy_bullet_speed 3                          // 敵の弾の移動スピード
+#define score_ball_speed 3                            // スコアボール・ライフボールの移動スピード
+#define bullet_cool_down_duration 5                   // 射撃から次の射撃が可能になるまでのフレーム数
+#define player_width 57                               // 自機の横幅
+#define player_height 26                              // 自機の縦幅
+#define bullet_width 20                               // 弾の横幅
+#define bullet_height 12                              // 弾の縦幅
+#define enemy_width 32                                // 敵の横幅
+#define enemy_height 32                               // 敵の縦幅
+#define enemy_bullet_width 18                         // 敵の弾の横幅
+#define enemy_bullet_height 18                        // 敵の弾の縦幅
+#define score_ball_width 40                           // スコアボール・ライフボールの横幅
+#define score_ball_height 30                          // スコアボール・ライフボールの縦幅
+#define text_blink_time 40                            // テキストの点滅の時間
+#define glitch_diff 2                                 // テキストをオシャレに表示するためにちょっとずらす距離
+#define title_x 160                                   // タイトル表記のx座標
+#define title_y 100                                   // タイトル・ゲームオーバー表記のy座標
+#define game_over_x 200                               // ゲームオーバー表記のx座標
+
+#define score_kill_enemy 500                          // 敵機撃墜によるスコア
+#define score_ball_score 8000                         // スコアボール取得によるスコア
+#define score_per_frame 2                             // 時間経過によるスコア(各フレーム加算)
+
+#define enemy_rerop_possibility 32                    // 敵機が復活する確率. 撃墜or画面外に移動した後、各フレーム rnd(enemy_rerop_possibility) が計算され
+                                                      // 0の時復活する
+#define enemy_shot_possibility 100                    // 敵が射撃をする確率. 各フレーム rnd(enemy_shot_possibility) が計算され
+                                                      // 0の時復活する
+#define enemy_drop_score_ball 15                       // 敵が撃墜されたとき enemy_drop_score_ball% の確率でスコアボールをドロップ
+#define enemy_drop_life_ball 3                        // 敵が撃墜されたとき enemy_drop_life_ball% の確率でライフボールをドロップ
+
+#define enemy_move_drastic 40                         // 敵の縦移動の速さ. sin(double(x座標) / 40) * enemy_move_radius に移動する
+#define enemy_move_radius 100                         // 敵の縦移動の振れ幅
+
+#define explode_sprite_time 4                         // 爆発アニメーションの、各状態が何フレーム続くか
+#define ball_sprite_time 10                           // スコアボール・ライフボールアニメーションの、各状態が何フレーム続くか
+#define enemy_bullet_sprite_time 40                   // スコアボール・ライフボールアニメーションの、各状態が何フレーム続くか
+
+#define revive_stop_player_x 20                       // 左端からゆっくり出てくる自機の登場アニメーションが、自機のx座標がどれくらいになったら終了するか
+
+#define player_lives 3                                // プレイヤーの残機数
+#define enemy_count 10                                // 同時に現れる敵の数
+#define bullet_count 20                               // 同時に撃てる弾の最大数
+#define enemy_bullet_count 30                         // 同時に現れる敵の弾の数
+#define ball_count                                    // 同時に現れる各ボールの最大数
+
+
+#define await_time 20                                 // 1フレーム何msか. 20ms(=0.02秒)待つ. 50fps
+
+
+// #----------------------------------------# 変数定義 #----------------------------------------#
+
+    // フレーム・フラグ関係
+    current_frame = 0                       // 現在のフレーム数
+
+    bullet_cool_down_frame = 0              // 次に射撃ができるようになるframe.
+    is_reviving = 1                         // 復活中かどうか. ゲーム開始時は左から現れるので 1
+    reviving_frame = 0                      // 復活アニメーションが開始してから何フレーム目か
+    is_keyboard_accepting = 0               // キー入力を受け付けるかどうか
+
+    is_playing = 0                          // プレイ中かどうか. 被撃墜時/ゲームオーバー時などは 0
+    is_started = 0                          // プレイ開始したかどうか
+    is_game_over = 0                        // ゲームオーバーかどうか
+    is_dying = 0                            // 被弾中かどうか
+    dying_frame = 0                         // 被弾アニメーションを開始してから何フレーム目か. 爆発の表示に使用
+
+
+    // スコア
+    score = 0                               // 現在のスコア
+    highscore = 0                           // ハイスコア
+    gosub *load_highscore
+    is_highscore_updated = 0                // ハイスコアを更新したかどうか
+
+    // プレイヤー
+    remain_lives = player_lives             // 残機数
+    player_x = -20 : player_y = wy / 2      //自機の初期位置
+    player_condition = 0                    // 0=普通 1=上昇中 2=下降中 3=被弾
+
+    // 敵機
+    dim enemy_x, enemy_count
+    dim enemy_initial_y, enemy_count        // 敵機の座標の初期値
+    dim enemy_y, enemy_count                // 敵機の現在のy座標
+
+    dim enemy_condition, enemy_count        // 敵機の状態 -1=なし, 0=あり, 1=撃墜中
+    dim enemy_explode_time, enemy_count     // 敵機が撃墜されてからのフレーム数
+
+    // 弾
+    dim bullet_x, bullet_count
+    dim bullet_y, bullet_count                         // 弾の座標
+    dim enemy_bullet_x, enemy_bullet_count
+    dim enemy_bullet_y, enemy_bullet_count             // 敵の弾の座標
+    dim enemy_bullet_initial_x, enemy_bullet_count
+    dim enemy_bullet_initial_y, enemy_bullet_count     // 敵の弾の座標
+    dim enemy_bullet_dx, enemy_bullet_count
+    dim enemy_bullet_dy, enemy_bullet_count            // 敵の弾の速度
+    dim enemy_bullet_created_at, enemy_bullet_count    // 敵の弾が生成された時間. アニメーションに使う
+
+    // ボール
+    dim score_ball_x, ball_count
+    dim score_ball_y, ball_count          // スコアボールの座標
+    dim life_ball_x, ball_count
+    dim life_ball_y, ball_count           // 残機ボールの座標
+
+
+    // 画像読み込み
+    // 背景は、近いものは早く、遅いものはゆっくり移動してほしい
+    buffer 1
+    picload "images/gradius.png"
+
+    buffer 2
+    picload "images/bg.png"
+    
+    buffer 3
+    picload "images/big.png"
+    bg_x_2 = 0
+    bg_y_2 = rnd(40) * 10                // この画像のx座標とy座標. スクロールに使う
+    
+    buffer 4
+    picload "images/far.png"
+    bg_x_3 = 0
+    bg_y_3 = rnd(40) * 10
+    
+    buffer 5
+    picload "images/ring.png"
+    bg_x_4 = 0
+    bg_y_4 = rnd(40) * 10
+    
+    buffer 6
+    picload "images/star.png"
+    bg_x_5 = 0
+    
+    buffer 7
+    picload "images/shoot.bmp"
+
+    // 音声読み込み
+	dmmload "sound/bgm.wav", 0, 1  // BGM
+	dmmload "sound/shot.wav", 1    // 射撃
+	dmmload "sound/dead.wav", 2    // 自機撃墜
+	dmmload "sound/expl.wav", 3    // 敵撃墜
+	dmmload "sound/score.wav", 4   // スコアボール取得
+	dmmload "sound/life.wav", 5    // ライフボール取得
+
+    //メインウィンドウ
+    screen 0
+
+//スタート
+*start
+    //ゲーム開始前の設定
+	gosub *init
+
+    repeat
+    	current_frame = current_frame + 1  // フレーム数
+        redraw 0     // 画面描画をいったん止める
+                     // これがないと、画面を更新してる途中も表示されるのでちらつく
+
+        gosub *draw_bg  // 背景描画
+
+        if is_started == 0 {  // スタート画面
+            gosub *draw_start_screen
+	        gosub *key_input
+		}
+		if is_dying == 1 | is_game_over == 1 {  // 被弾中
+	        gosub *draw_player
+	        gosub *draw_bullet
+	        gosub *draw_enemy_bullet
+	        gosub *draw_score_ball
+	        gosub *draw_life_ball
+	        gosub *draw_enemy
+		}
+		if is_game_over == 1 {  // ゲームオーバー
+            gosub *draw_game_over
+	        gosub *key_input
+		}
+		if is_started == 1 & is_game_over == 0 {  // スコア表示(ゲーム開始後からゲームオーバーまで表示)
+            gosub *draw_score
+		}
+		if is_started == 1 & is_playing == 0 & is_dying == 0 {  // 復活前画面
+		    gosub *draw_continue
+	        gosub *key_input
+		}
+        if is_playing == 1 {  // プレイ中
+
+	        if is_keyboard_accepting == 1: gosub *key_input
+	        if is_reviving: gosub *revive
+
+	        gosub *draw_player
+	        gosub *draw_bullet
+	        gosub *draw_enemy_bullet
+	        gosub *draw_score_ball
+	        gosub *draw_life_ball
+	        gosub *draw_enemy
+	        gosub *bullet_enemy_collision
+	        gosub *enemy_player_collision
+	        gosub *score_ball_collision
+	        gosub *life_ball_collision
+	        gosub *enemy_bullet_player_collision
+        }
+        redraw 1
+        await await_time
+    loop
+    //ゲームオーバー判定
+    end
+
+// #----------------------------------------# 初期化・リセット処理 #----------------------------------------#
+*init  // 初期化. スコアとか、開始状況とかも全部初期化する
+
+    gosub *reset
+
+    remain_lives = player_lives
+    is_started = 0
+
+    score = 0
+    is_highscore_updated = 0
+	gosub *play_bgm
+
+	return
+
+*reset  // 被弾後のコンティニューにつかう. スコアや残機数など以外を初期化
+    current_frame = 0
+
+    bullet_cool_down_frame = 0
+    is_reviving = 1
+    reviving_frame = 0
+    is_keyboard_accepting = 0
+
+    player_x = -20 : player_y = wy / 2
+    player_condition = 0
+
+    is_playing = 0
+    is_started = 1
+    is_game_over = 0
+    is_dying = 0
+    dying_frame = 0
+
+    // -100 で存在しないことにする
+    foreach enemy_condition
+		enemy_condition(cnt) = -1
+        enemy_explode_time(cnt) = 0
+        enemy_x(cnt) = -100
+        enemy_initial_y(cnt) = -100
+        enemy_y(cnt) = -100
+	loop
+    foreach bullet_x
+		bullet_x(cnt) = -100
+		bullet_y(cnt) = -100
+	loop
+    foreach score_ball_x
+		score_ball_x(cnt) = -100
+		score_ball_y(cnt) = -100
+	loop
+    foreach life_ball_x
+		life_ball_x(cnt) = -100
+		life_ball_y(cnt) = -100
+	loop
+    foreach enemy_bullet_x
+		enemy_bullet_x(cnt) = -100
+		enemy_bullet_y(cnt) = -100
+		enemy_bullet_initial_x(cnt) = -100
+		enemy_bullet_initial_y(cnt) = -100
+		enemy_bullet_dx(cnt) = 0.0
+		enemy_bullet_dy(cnt) = 0.0
+        enemy_bullet_created_at(cnt) = 0
+	loop
+
+	return
+
+
+// #----------------------------------------# 描画・アニメーション #----------------------------------------#
+
+*revive         // 初回登場 / 復活アニメーション
+	if reviving_frame == 0 {  // 最初は見えない左端に移動
+		player_x = -20
+	}
+	reviving_frame = reviving_frame + 1
+	player_x = player_x + 1  // ちょっとずつ右に
+
+	if player_x > revive_stop_player_x {  // 十分右に行ったら
+		is_reviving = 0             // プレイ開始！
+		is_keyboard_accepting = 1
+		reviving_frame = 0
+	}
+	return
+
+*draw_bg  // 背景(宇宙)を描画
+          // 右から左にながれていって、完全に見えなくなったらまた右にセット
+	if bg_x_2 < -100 {  // bg_2 は x座標が 100 まで行ったら完全に見えなくなる. その時にリセット
+		bg_x_2 = wx
+		bg_y_2 = rnd(45) * 10  // 高さは0~450の範囲で適当に。多分はみ出ない
+	}
+	if bg_x_3 < -250 {
+		bg_x_3 = wx
+		bg_y_3 = rnd(45) * 10
+	}
+	if bg_x_4 < -30 {
+		bg_x_4 = wx
+		bg_y_4 = rnd(45) * 10
+	}
+	if bg_x_5 < 0 {            // bg_5 だけは高さは一番上でOK
+		bg_x_5 = wx
+	}
+
+    gmode 0, wx, wy  // 移動しない背景. 前面を描画
+    pos 0, 0
+    gcopy 2, 0, 0
+
+    gmode 2, wx, wy
+    pos bg_x_5, 0     // 指定場所に描画
+    gcopy 6, 0, 0
+    pos bg_x_5-wx, 0  // 画面一枚分ずらすことで、シームレスにする
+    gcopy 6, 0, 0
+    bg_x_5 = bg_x_5 - 1  // 毎フレーム1ピクセル動かす. 結構遅い
+
+
+    gmode 2, wx, wy
+    pos bg_x_3, bg_y_3
+    gcopy 4, 0, 0
+    bg_x_3 = bg_x_3 - 2  // 毎フレーム2ピクセル動かす. ちょっと早い
+
+
+    gmode 2, wx, wy
+    pos bg_x_4, bg_y_4
+    gcopy 5, 0, 0
+    bg_x_4 = bg_x_4 - 3
+
+    gmode 2, wx, wy
+    pos bg_x_2, bg_y_2
+    gcopy 3, 0, 0
+    bg_x_2 = bg_x_2 - 4
+
+   	return
+
+*draw_start_screen     // タイトル画面
+    draw_glitch title_x, title_y, "KOSEN SHOOTER"
+
+    font "ＭＳ ゴシック", 22
+
+    // 文字を薄くしたり濃くしたりする
+    if (current_frame \ (2 * text_blink_time)) < text_blink_time: color 255, 255, 255 : else : color 200, 200, 200
+
+    pos 200, 360
+    mes "HISCORE:"
+    pos 302, 360
+    mes highscore
+
+    pos 200, 400
+    mes "PRESS [SPACE] TO START"
+    pos 200, 430
+    mes "PRESS [ ESC ] TO EXIT"
+    return
+
+*draw_game_over  // ゲームオーバー画面
+
+
+    font "ＭＳ ゴシック", 22
+    if is_highscore_updated {  // ハイスコア更新で、オシャレに表示
+        draw_glitch 250, 250, "NEW RECORD!!"
+    }
+    pos 250, 300
+    mes "SCORE:"
+    pos 330, 300
+    mes score
+
+    pos 228, 350
+    mes "HISCORE:"
+    pos 330, 350
+    mes highscore
+
+    pos 200, 400
+    mes "PRESS [  R  ] TO RESTART"
+    pos 200, 430
+    mes "PRESS [ ESC ] TO EXIT"
+    return
+
+*draw_score  // スコアや残機を表示
+    color 255, 255, 255
+    font "ＭＳ ゴシック", 22
+    pos 100, 10
+    mes "SCORE:"
+    pos 180, 10
+    mes score
+    score = score + is_playing * score_per_frame  // 生きてる間はスコアが score_per_frame ずつ加算される
+                                                  // 死んでる:
+                                                  //         score = score + 0 * score_per_frame
+                                                  //               = score
+                                                  // 生きてる:
+                                                  //         score = score + 1 * score_per_frame
+                                                  //               = score + score_per_frame
+
+    pos 10, 10
+    mes "1P"
+    gmode 2, 33, 33
+    repeat remain_lives-1
+        pos 10 + 33 * cnt, 30
+        gcopy 1, 90, 160
+    loop
+    return
+
+*draw_continue  // コンティニュー画面表示
+    font "ＭＳ ゴシック", 22
+    if (current_frame \ (2 * text_blink_time)) < text_blink_time: color 255, 255, 255 : else : color 200, 200, 200
+    pos 200, 400
+    mes "PRESS [SPACE] TO CONTINUE"
+    return
+    
+    
+*draw_player       // プレイヤー描画
+    pos player_x, player_y
+	gmode 2, player_width, player_height
+	if player_condition == 0 {          // 普通の時
+    	gcopy 1, 9, 10
+	} else :if player_condition == 1 {  // 上昇中
+		gcopy 1, 132, 10
+	} else :if player_condition == 2 {  // 下降中
+		gcopy 1, 72, 10
+	} else :if player_condition == 3 {  // 被弾時
+    	gmode 2, 60, 32     // 爆発アニメーションはプレイヤー画像とサイズが異なる
+
+        dying_frame = dying_frame + 1  // アニメーションした回数を増やす
+
+		if dying_frame <= explode_sprite_time {  // 初めの方
+        	gcopy 1, 190, 9
+		} else: if dying_frame <= explode_sprite_time*2 {  // 次
+        	gcopy 1, 248, 9
+		} else: if dying_frame <= explode_sprite_time*3 {
+        	gcopy 1, 308, 9
+		} else: if dying_frame <= explode_sprite_time*4 {
+        	gcopy 1, 368, 9
+		}
+
+		if explode_sprite_time*4 <= dying_frame {  // 爆発アニメーションが終わったら
+			if is_game_over == 0 {  // ゲームが続いてたらリセット
+				gosub *reset
+			}
+		}
+	}
+
+   	return
+
+*draw_bullet  // 弾を描画する
+	gmode 2, 20, 12
+    foreach bullet_x  // それぞれにたいして
+    	if bullet_x(cnt) != -100 & bullet_y(cnt) != -100 {
+	    	bullet_x(cnt) = bullet_x(cnt) + bullet_speed  // 次の場所に移動
+	    	if bullet_x(cnt) > wx {  // はみ出てたら削除
+				bullet_x(cnt) = -100
+				bullet_y(cnt) = -100
+		    } else {                 // 画面内なら描画
+		    	pos bullet_x(cnt), bullet_y(cnt)
+				gcopy 1, 68, 103
+			}
+	    }
+	loop
+	return
+
+*draw_enemy_bullet  // 敵の玉を描画
+	gmode 2, enemy_bullet_width, enemy_bullet_height
+    foreach enemy_bullet_x
+    	if enemy_bullet_initial_x(cnt) != -100 & enemy_bullet_initial_y(cnt) != -100 {
+	    	lifetime = current_frame - enemy_bullet_created_at(cnt)                                // 敵の弾は自機と違ってx軸とy軸両方に速度がある
+	    	enemy_bullet_x(cnt) = enemy_bullet_initial_x(cnt) + (enemy_bullet_dx(cnt) * lifetime)  // そして速度は整数じゃないので、毎フレームたしてるだけじゃ変な挙動になる(端数が切り捨てられる)
+	    	enemy_bullet_y(cnt) = enemy_bullet_initial_y(cnt) + (enemy_bullet_dy(cnt) * lifetime)  // なので、毎回どれだけ移動したかを計算してる
+	    	if enemy_bullet_x(cnt) < -enemy_bullet_width | enemy_bullet_x(cnt) > wx | enemy_bullet_y(cnt) < -enemy_bullet_height | enemy_bullet_y(cnt) > wy {
+				enemy_bullet_x(cnt) = -100             // 領域外なら削除
+				enemy_bullet_y(cnt) = -100
+				enemy_bullet_dx(cnt) = -100.0
+				enemy_bullet_dy(cnt) = -100.0
+				enemy_bullet_initial_x(cnt) = -100
+				enemy_bullet_initial_y(cnt) = -100
+				enemy_bullet_created_at(cnt) = 0
+		    } else {
+			    // 敵の弾はアニメーションするぞ！
+			    state = (int(enemy_bullet_x(cnt) + enemy_bullet_y(cnt)) / enemy_bullet_sprite_time) \ 4
+		    	pos enemy_bullet_x(cnt), enemy_bullet_y(cnt)
+				gcopy 1, 310 + (21 * state), 88
+			}
+	    }
+	loop
+	return
+
+*draw_enemy  // 敵の描画
+    foreach enemy_condition
+        gmode 2, 32, 32
+        if enemy_condition(cnt) == -1 & rnd(enemy_rerop_possibility) == 0 {  // 敵のリポップ判定
+            enemy_x(cnt) = wx
+            enemy_initial_y(cnt) = enemy_move_radius + rnd(wy - enemy_move_radius * 2)
+            enemy_condition(cnt) = 0
+        }
+        if enemy_condition(cnt) == 0 {  // 敵も移動する
+            // x軸はゆっくり左に移動
+            enemy_x(cnt) = enemy_x(cnt) - enemy_speed
+
+            // y軸は、初期位置からばねみたいに上下に動く
+        	enemy_y(cnt) = enemy_initial_y(cnt) + sin(double(enemy_x(cnt)) / enemy_move_drastic) * enemy_move_radius
+            pos enemy_x(cnt) , enemy_y(cnt)
+            if rnd(enemy_shot_possibility) == 0 {  // enemy_shot_possibilityフレームに一回くらいの確率で弾を発射
+                                                   // 正確には、 敵が発生してから左端で消えるまでに1回以上発射する確率は
+                                                   // 1 - (((enemy_shot_possibility-1)/enemy_shot_possibility)^(wx / enemy_speed))
+                                                   // もし enemy_shot_possibility = 200, wx = 640, enemy_speed = 5 なら 47% くらい
+				create_enemy_bullet enemy_x(cnt), enemy_y(cnt)
+	        }
+            gcopy 7, 32, 0
+            if -enemy_x(cnt) >= enemy_width : enemy_condition(cnt) = -1  // 左端に消えたら、消去
+        }
+        if enemy_condition(cnt) == 1 {  // 被弾
+        	gmode 2, 60, 32
+	        time = enemy_explode_time(cnt)  // 敵が被弾した時間
+			enemy_explode_time(cnt) = time + 1
+            pos enemy_x(cnt) , enemy_y(cnt)
+			if time <= explode_sprite_time {  // それぞれアニメーション
+            	gcopy 1, 190, 9
+			} else: if time <= explode_sprite_time*2 {
+            	gcopy 1, 248, 9
+			} else: if time <= explode_sprite_time*3 {
+            	gcopy 1, 308, 9
+			} else: if time <= explode_sprite_time*4 {
+            	gcopy 1, 368, 9
+			}
+			if explode_sprite_time*4 <= time {  // 終了
+				enemy_explode_time(cnt) = 0
+				enemy_condition(cnt) = -1  // 削除
+			}
+	    }
+    loop
+    return
+
+
+*draw_score_ball  // スコアボール描画
+    foreach score_ball_x
+        gmode 2, score_ball_width, score_ball_height
+    	if score_ball_x(cnt) != -100 & score_ball_y(cnt) != -100 {
+	    	pos score_ball_x(cnt), score_ball_y(cnt)
+	    	score_ball_state = ((score_ball_x(cnt) / ball_sprite_time)) \ 3  // ボールのアニメーション
+	    	gcopy 1, 9 + (score_ball_width * score_ball_state), 49
+	    	
+	    	score_ball_x(cnt) = score_ball_x(cnt) - score_ball_speed  // 移動
+	    	
+	    	if -score_ball_x(cnt) > score_ball_width {
+				score_ball_x(cnt) = -100
+				score_ball_y(cnt) = -100
+		    }
+	    }
+    loop
+    return
+
+*draw_life_ball  // ライフボール描画. 内容はスコアボールとほぼ一緒
+    foreach life_ball_x
+        gmode 2, score_ball_width, score_ball_height
+    	if life_ball_x(cnt) != -100 & life_ball_y(cnt) != -100 {
+	    	pos life_ball_x(cnt), life_ball_y(cnt)
+	    	life_ball_state = ((life_ball_x(cnt) / ball_sprite_time)) \ 3
+	    	gcopy 1, 128 + (score_ball_width * life_ball_state), 49
+	    	life_ball_x(cnt) = life_ball_x(cnt) - score_ball_speed
+
+	    	if -life_ball_x(cnt) > score_ball_width {
+				life_ball_x(cnt) = -100
+				life_ball_y(cnt) = -100
+		    }
+	    }
+    loop
+    return
+
+
+// #----------------------------------------# 衝突判定 #----------------------------------------#
+
+*enemy_player_collision  // 敵とプレイヤーの当たり判定. 重なったらアウト
+    foreach enemy_condition
+        if enemy_condition(cnt) == 0 {
+	        enemy_x_left = enemy_x(cnt)
+	        enemy_y_top = enemy_y(cnt)
+        	if ((enemy_x_left <= player_x) & (player_x <= enemy_x_left+enemy_width)) | ((enemy_x_left <= player_x+player_width) & (player_x+player_width <= enemy_x_left+enemy_width)) {
+				if ((enemy_y_top <= player_y) & (player_y <= enemy_y_top+enemy_height)) | ((enemy_y_top <= player_y+player_height) & (player_y+player_height <= enemy_y_top+enemy_height)) {
+					gosub *got_hit  // 被弾
+		        }
+	        }
+        }
+    loop
+    return
+
+
+*score_ball_collision  // スコアボールを取得するかの判定
+	foreach score_ball_x
+        if score_ball_x(cnt) != -100 & score_ball_y(cnt) != -100 {
+	        score_ball_x_left = score_ball_x(cnt)
+	        score_ball_y_top = score_ball_y(cnt)
+        	if ((score_ball_x_left <= player_x) & (player_x <= score_ball_x_left+score_ball_width)) | ((score_ball_x_left <= player_x+player_width) & (player_x+player_width <= score_ball_x_left+score_ball_width)) {
+				if ((score_ball_y_top <= player_y) & (player_y <= score_ball_y_top+score_ball_height)) | ((score_ball_y_top <= player_y+player_height) & (player_y+player_height <= score_ball_y_top+score_ball_height)) {
+					score = score + score_ball_score  // 取得出来たらスコア加算！
+					score_ball_x(cnt) = -100
+					score_ball_y(cnt) = -100          // 削除
+					gosub *play_score_ball            // スコアボール取得音をならす
+		        }
+	        }
+        }
+    loop
+    return
+
+
+*life_ball_collision  // ライフボールを取得するかの判定
+	foreach life_ball_x
+        if life_ball_x(cnt) != -100 & life_ball_y(cnt) != -100 {
+	        life_ball_x_left = life_ball_x(cnt)
+	        life_ball_y_top = life_ball_y(cnt)
+        	if ((life_ball_x_left <= player_x) & (player_x <= life_ball_x_left+score_ball_width)) | ((life_ball_x_left <= player_x+player_width) & (player_x+player_width <= life_ball_x_left+score_ball_width)) {
+				if ((life_ball_y_top <= player_y) & (player_y <= life_ball_y_top+score_ball_height)) | ((life_ball_y_top <= player_y+player_height) & (player_y+player_height <= life_ball_y_top+score_ball_height)) {
+					remain_lives = remain_lives + 1
+					life_ball_x(cnt) = -100
+					life_ball_y(cnt) = -100
+					gosub *play_life_ball
+		        }
+	        }
+        }
+    loop
+    return
+
+
+*enemy_bullet_player_collision  // 敵の弾にプレイヤーが当たるかの判定
+	foreach enemy_bullet_x
+        if enemy_bullet_x(cnt) != -100 & enemy_bullet_y(cnt) != -100 {
+	        bullet_x_ = enemy_bullet_x(cnt) + (enemy_bullet_width / 2)
+	        bullet_y_ = enemy_bullet_y(cnt) + (enemy_bullet_height / 2)  // 敵の弾はちょっと大きいから、点として計算する
+        	if ((player_x <= bullet_x_) & (bullet_x_ <= player_x+player_width) & (player_y <= bullet_y_) & (bullet_y_ <= player_y+player_height)) {
+				gosub *got_hit
+	        }
+        }
+    loop
+    return
+
+
+*got_hit  // 当たったら
+	is_keyboard_accepting = 0  // いったんキー入力を受け付けない
+	
+	remain_lives = remain_lives - 1  // 残機が減る
+	if remain_lives == 0 {           // 残機がなくなったら
+		is_game_over = 1             // 終了
+		if highscore < score {       // ハイスコア更新判定
+			is_highscore_updated = 1
+			highscore = score
+			gosub *save_highscore
+		} else {
+			is_highscore_updated = 0
+		}
+		gosub *stop_sound
+	} else {
+	    is_reviving = 1         // 残機があるなら復活
+	}
+	gosub *play_dead            // 爆発音
+	is_dying = 1                // 爆発中フラグ
+	is_playing = 0              // プレイ中断
+	player_condition = 3        // 被弾中
+	return
+	
+// #----------------------------------------# キー入力 #----------------------------------------#
+*key_input
+    stick kk, 31
+    if kk & 128 : end                                     // [Esc]
+    if is_game_over == 0 {
+		player_condition = 0
+	    if kk & 1 : player_x = player_x - player_speed    // [←]
+	    if kk & 4 : player_x = player_x + player_speed    // [→]
+	    if (kk & 10) == 2 {                               // [↑]
+	    	player_y = player_y - player_speed
+			player_condition = 1                          // 上昇中
+		}
+		if (kk & 10) == 8 {                               // [↓]
+		    player_y = player_y + player_speed
+		    player_condition = 2                          // 下降中
+		}
+		if kk & 16 {                                      // [ SPACE ]
+			if is_playing == 0 & is_game_over == 0 {
+				is_started = 1
+				is_playing = 1                            // プレイ中じゃないなら、プレイ開始
+			} else {
+		    	gosub *shot_bullet                        // プレイ中なら弾を撃つ
+		    }
+		}
+	    player_x = limit(player_x, 0, wx - 50)
+	    player_y = limit(player_y, 0, wy - 30)            // 画面からはみ出さないように
+    }
+	getkey kk, 82                                         // [ R ]
+	if kk == 1 {                                          // Rキーでいつでも最初から
+		gosub *init
+	}
+    return
+
+*shot_bullet  // 弾を撃つ
+	if bullet_cool_down_frame < current_frame {  // 前回から十分時間があいてれば
+	    foreach bullet_x
+	    	if bullet_x(cnt) == -100 & bullet_y(cnt) == -100 {  // 弾の空きスペースに作成
+		    	bullet_x(cnt) = player_x + 30
+		    	bullet_y(cnt) = player_y + 8                    // このくらいの座標がちょうど自機の先端に見える
+		    	bullet_cool_down_frame = current_frame + bullet_cool_down_duration  // 次は bullet_cool_down_duration フレーム後に撃てる
+		    	gosub *play_shot                                // 発射音
+		    	break
+		    }
+		loop
+	}
+	return
+
+
+// #----------------------------------------# サウンド #----------------------------------------#
+*play_bgm
+	dmmplay 0
+	return
+
+*play_shot
+	dmmplay 1
+	return
+
+*play_dead
+	dmmplay 2
+	return
+
+*play_explode
+	dmmplay 3
+	return
+
+*play_score_ball
+	dmmplay 4
+	return
+
+*play_life_ball
+	dmmplay 5
+	return
+
+*stop_sound
+	dmmstop
+	return
+
+// #----------------------------------------# スコア関係 #----------------------------------------#
+*save_highscore
+	notesel data
+
+	noteadd str(highscore), 0
+
+	notesave "highscore.txt"
+
+*load_highscore
+	exist "highscore.txt"
+	if strsize == -1 {
+		highscore = 0
+		return
+	}
+
+	notesel data
+
+	noteload "highscore.txt"
+
+	highscore = int(data)
+
+	return
+	
+// #----------------------------------------# 関数 #----------------------------------------#
+
+#deffunc draw_glitch int arg_x, int arg_y, str print_text      // 与えられた文字列を、与えられた座標にオシャレに描画
+    font "ＭＳ ゴシック", 50, 7
+    color 255, 39, 255
+    pos arg_x + glitch_diff, arg_y + glitch_diff
+    mes print_text
+
+    color 0, 231, 1
+    pos arg_x - glitch_diff, arg_y - glitch_diff
+    mes print_text
+
+    color 255, 255, 255
+    pos arg_x, arg_y
+    mes print_text
+
+    return
+
+
+*bullet_enemy_collision  // 自機の弾と敵の当たり判定
+    foreach enemy_condition
+        if enemy_condition(cnt) == 0 {
+	        enemy_cnt = cnt
+	        enemy_x_left = enemy_x(cnt)
+	        enemy_y_top = enemy_y(cnt)
+	        foreach bullet_x
+	            // 弾の左端もしくは右端が敵のx座標の範囲の中に入っている
+	        	if ((enemy_x_left <= bullet_x(cnt)) & (bullet_x(cnt) <= enemy_x_left+enemy_width)) | ((enemy_x_left <= bullet_x(cnt)+bullet_width) & (bullet_x(cnt)+bullet_width <= enemy_x_left+enemy_width)) {
+					// 弾の上端もしくは下端が敵のy座標の範囲の中に入っている
+					if ((enemy_y_top <= bullet_y(cnt)) & (bullet_y(cnt) <= enemy_y_top+enemy_height)) | ((enemy_y_top <= bullet_y(cnt)+bullet_height) & (bullet_y(cnt)+bullet_height <= enemy_y_top+enemy_height)) {
+						// これで弾と重なっているという計算になる. ほかの当たり判定でもこれを用いる
+						
+						enemy_condition(enemy_cnt) = 1 　　 // 被弾している
+						bullet_x(cnt) = -100
+						bullet_y(cnt) = -100               // 弾を消去
+						score = score + score_kill_enemy   // 敵を倒したスコア
+						gosub *play_explode                // 爆破音をならす
+						drop = rnd(100)                    // ボール系を落とさないか計算
+						if drop < enemy_drop_score_ball {  // enemy_drop_score_ball% でスコアボール
+							create_score_ball enemy_x_left, enemy_y_top
+						}else: if drop < (enemy_drop_score_ball + enemy_drop_life_ball) & remain_lives <= player_lives {
+						                                   // enemy_drop_life_ball% でかつ残機がplayer_lives機以下ならライフボール
+						                                   // 最大の残機数は player_lives + 1 になりうる
+						                                   // でも実は、フィールドにいっぱいライフボールをためた後に全部取ったら、残機はめっちゃ増える
+						    create_life_ball enemy_x_left, enemy_y_top
+						}
+			        }
+		        }
+	        loop
+        }
+    loop
+    return
+
+#deffunc create_score_ball int arg_create_score_ball_x, int arg_create_score_ball_y  // ここにスコアボールを置く
+    foreach score_ball_x
+    	if score_ball_x(cnt) == -100 & score_ball_y(cnt) == -100 {
+	    	score_ball_x(cnt) = arg_create_score_ball_x
+	    	score_ball_y(cnt) = arg_create_score_ball_y
+	    	break
+	    }
+	loop
+	return
+
+#deffunc create_life_ball int arg_create_life_ball_x, int arg_create_life_ball_y // 上のライフボール版
+    foreach life_ball_x
+    	if life_ball_x(cnt) == -100 & life_ball_y(cnt) == -100 {
+	    	life_ball_x(cnt) = arg_create_life_ball_x
+	    	life_ball_y(cnt) = arg_create_life_ball_y
+	    	break
+	    }
+	loop
+	return
+
+#deffunc create_enemy_bullet int arg_create_enemy_bullet_x, int create_enemy_bullet_y  // 敵の弾をしていした座標に作る
+    foreach enemy_bullet_x
+    	if enemy_bullet_initial_x(cnt) == -100 & enemy_bullet_initial_y(cnt) == -100 {
+	    	enemy_bullet_initial_x(cnt) = arg_create_enemy_bullet_x + (enemy_width / 2)
+	    	enemy_bullet_initial_y(cnt) = arg_create_enemy_bullet_x + (enemy_height / 2)  // 初期座標. 敵のど真ん中
+	    	dx = player_x - arg_create_enemy_bullet_x                 // 自機と敵の横方向の距離
+	    	if dx == 0.0 {
+				dx = 1.0  // 0 だったら困るので 1 にする
+		    }
+	    	dy = player_y - create_enemy_bullet_y                     // 縦方向の距離
+	    	angle = atan(double(dy)/dx)                               // atanで傾きを求める
+	    	enemy_bullet_dx(cnt) = -cos(angle) * enemy_bullet_speed
+	    	enemy_bullet_dy(cnt) = -sin(angle) * enemy_bullet_speed   // 横方向と縦方向のスピード
+	    	enemy_bullet_created_at(cnt) = current_frame              // 今作ったよ
+	    	break
+	    }
+	loop
+	return

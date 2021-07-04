@@ -1,0 +1,1356 @@
+#include "hspogg.as"                                  // 音を同時にならせるようにするプラグイン
+dmmini                                                // プラグイン初期化
+
+#define mino_line_width 2                             // ブロックの線の太さ. ghostの表示などでこれにあわせてずらす
+#define playfield_width 10                            // プレイ領域の横幅. ブロック数
+#define playfield_height 20                           // プレイ領域の縦幅
+#define block_size 32                                 // 1ブロックあたりのピクセル数
+#define wx block_size * playfield_width * 2 + 100     // 画面の横幅
+#define wy block_size * playfield_height              // 画面の縦幅
+#define playfield_x block_size * 5                    // プレイ領域の左端のx座標. ホールドとか、次のミノとかの表示のために左に領域をあける
+#define input_diff 6                                  // キー入力を押しっぱなしの時、次の入力を受け付けるまでの間隔. 0とかにしたら、一瞬で端まで行っちゃう
+#define clear_animation_per_block 2                   // ラインをそろえて消えるアニメーションの、それぞれのフレーム
+#define glitch_diff 2                                 // 文字をオシャレに表示するために、背景に色を変えた同じ文字をちょっとずらして描画する。
+                                                      // その"ちょっとずらす"大きさ
+#define game_over_x 200                               // ゲームオーバーの文字のx座標
+#define game_over_y 100                               // ゲームオーバーの文字のy座標
+
+#define await_time 30                                 // 1フレーム何msか. 30ms(=0.03秒)待つ. 大体33fps
+#define fall_lock_down_frame 500 / await_time         // 地面に接地してからミノが設置されるまで. 0.5秒
+
+#define mino_start_x 3
+
+
+// #----------------------------------------# 変数定義 #----------------------------------------#
+
+    // 定数
+    dim fall_time_level, 10                            // 各レベルごとのブロックの自動落下の間隔
+    fall_time_level = 25, 18, 14, 9, 7, 5, 4, 3, 2, 1  // 多分9レベル以上は無理だから9まで!
+
+
+    // フレーム関係
+    current_frame = 0              // 現在のフレーム数
+    next_fall_frame = 0            // 次の落下のフレーム
+    next_input_frame = 0           // 次の入力受付フレーム
+    clearing_start_frame = 0       // ラインが消えるアニメーションが始まったフレーム数
+    input_start_frame = 0          // 矢印の押しっぱなしが始まったフレーム数
+
+    // フラグ
+    game_over = 0            // ゲームオーバーフラグ
+    clearing = 0             // 列をそろえて、消えている途中
+
+    // スコア
+    score = 0
+    total_line = 0           // 消した総ライン数
+    high_score = 0
+
+    is_previous_difficult = 0  // 直前のライン消去が、テトリスまたはT-Spinだったか
+    previous_action = ""       // 直前の行為の名前. Single, Tetris, T-SPin Double とか
+    previous_action_score = 0  // 直前の行為によって得たスコア
+    combo_counter = 0          // ミノ設置によるライン消去の連続数
+    is_back_to_back = 0        // back-to-back 発動中か
+
+    did_spin = 0               // 直近の回転でスピンを行ったかどうか
+
+    level = 0                // レベル = (total_line / 10)
+    level_color = 0          // レベル = (total_line / 10)
+
+    // ラインを消す関係
+    clear_line = 0           // 今消えるラインの数 (プレイ中、消えてるアニメーションの間だけ使う)
+
+    dim clearing_line, 4     // 今消してるラインのy座標. 一番多くてIミノを縦に置いた4ラインまでしか消せないから、長さは4
+
+    // 入力
+	input_rotate = 0         // 回転に関する入力. 0=無し, -1=左回転(Q), 1=右回転(E)
+    input_direction = 0      // 移動に関する入力. 0=無し, 1=上(ハードドロップ), 2=右, 3=左, 4=下(ソフトドロップ)
+    previous_input = 0       // 押しっぱなし判定に用いる。前回押されてた矢印キー
+
+    // ミノ
+    current_mino = 0         // 今操作してるミノ. 0=無し, 1=T, 2=S, 3=Z, 4=L, 5=J, 6=I, 7=O
+    current_mino_x = mino_start_x
+    current_mino_y = -1       // 今操作してるミノのブロック位置
+
+    lock_down_count = 15     // 今操作してるミノが、その高さで何回横移動・回転をしたか. 15 - lock_down_count = 回数
+                             // これが0になるまでは、横移動・回転地面に設置するまでの時間がリセットされる。
+                             // ブロックが下がる or 設置されると 15 に戻る
+    lock_down_lowest = -2    // 今までミノが下がった最低のy座標
+
+    current_direction = 0    // ミノの回転を表す値. 右回転で+, 左回転で-, min=0, max=3
+
+
+    dim mino_type_size, 6    // 各ミノの収まるサイズ. current_minoは 0=無し なので、あわせて 0番目は使わない
+    mino_type_size = 0, 3, 3, 3, 3, 3, 4, 4
+
+    dim field_matrix, playfield_width, playfield_height       // ミノを置いたりしたとき、ここにブロックを積んでいく
+
+	is_hold_used = 0        // ホールドを使ったかどうか. 使ったら、操作してるミノを落下させるまでホールドできない.
+	                        // ミノが落下したらまた 0 になる
+    holding_mino = 0        // ホールドしてるミノ. 0=無し, 1=T, 2=S, 3=Z, 4=L, 5=J, 6=I, 7=O
+    dim upcoming_mino, 2    // 次とその次のミノ. 見えるように描画する. 0=無し, 1=T, 2=S, 3=Z, 4=L, 5=J, 6=I, 7=O
+
+
+                            // テトリスのミノはランダムなように見えてランダムじゃない. 実は、7種類すべてのミノをシャッフルした後に、
+                            // 順番に取り出している。
+    mino_pool_index = 0               // 今何番目まで取り出したか. 7になると0に戻る
+    dim mino_pool, 7                  // シャッフルされたミノの配列. mino_pool_indexが7 になると、またシャッフルされる
+    mino_pool = 1, 2, 3, 4, 5, 6, 7
+
+
+
+    dim mino_collision, 8, 4, 4, 4        // 各ミノの、各回転に対する当たり判定
+                                          // 要素が0の時、当たり判定無し
+                                          // 0以外の時、ミノの種類を表す数字になっていて、当たり判定あり
+
+                                          // 8(ミノの種類+ミノが無い場合の0)
+                                          //  * 4 (回転の方向数)
+                                          //    * 4 (縦の最大の長さ)
+                                          //      * 4 (横の最大の長さ)
+
+    									  // T ミノ
+
+    mino_collision(0, 0, 0, 1) = 0, 1, 0  // |  ■  |
+    mino_collision(0, 1, 0, 1) = 1, 1, 1  // |■■■|
+    mino_collision(0, 2, 0, 1) = 0, 0, 0  // |      |
+
+    mino_collision(0, 0, 1, 1) = 0, 1, 0  // |  ■  |
+    mino_collision(0, 1, 1, 1) = 0, 1, 1  // |  ■■|
+    mino_collision(0, 2, 1, 1) = 0, 1, 0  // |  ■  |
+
+    mino_collision(0, 0, 2, 1) = 0, 0, 0  // |      |
+    mino_collision(0, 1, 2, 1) = 1, 1, 1  // |■■■|
+    mino_collision(0, 2, 2, 1) = 0, 1, 0  // |  ■  |
+
+    mino_collision(0, 0, 3, 1) = 0, 1, 0  // |  ■  |
+    mino_collision(0, 1, 3, 1) = 1, 1, 0  // |■■  |
+    mino_collision(0, 2, 3, 1) = 0, 1, 0  // |  ■  |
+
+
+
+    									  // Sミノ
+
+    mino_collision(0, 0, 0, 2) = 0, 2, 2  // |  ■■|
+    mino_collision(0, 1, 0, 2) = 2, 2, 0  // |■■  |
+    mino_collision(0, 2, 0, 2) = 0, 0, 0  // |      |
+
+    mino_collision(0, 0, 1, 2) = 0, 2, 0  // |  ■  |
+    mino_collision(0, 1, 1, 2) = 0, 2, 2  // |  ■■|
+    mino_collision(0, 2, 1, 2) = 0, 0, 2  // |    ■|
+
+    mino_collision(0, 0, 2, 2) = 0, 0, 0  // |      |
+    mino_collision(0, 1, 2, 2) = 0, 2, 2  // |  ■■|
+    mino_collision(0, 2, 2, 2) = 2, 2, 0  // |■■  |
+
+    mino_collision(0, 0, 3, 2) = 2, 0, 0  // |■    |
+    mino_collision(0, 1, 3, 2) = 2, 2, 0  // |■■  |
+    mino_collision(0, 2, 3, 2) = 0, 2, 0  // |  ■  |
+
+
+
+    									  // Zミノ
+
+    mino_collision(0, 0, 0, 3) = 3, 3, 0  // |■■  |
+    mino_collision(0, 1, 0, 3) = 0, 3, 3  // |  ■■|
+    mino_collision(0, 2, 0, 3) = 0, 0, 0  // |      |
+
+    mino_collision(0, 0, 1, 3) = 0, 0, 3  // |    ■|
+    mino_collision(0, 1, 1, 3) = 0, 3, 3  // |  ■■|
+    mino_collision(0, 2, 1, 3) = 0, 3, 0  // |  ■  |
+
+    mino_collision(0, 0, 2, 3) = 0, 0, 0  // |      |
+    mino_collision(0, 1, 2, 3) = 3, 3, 0  // |■■  |
+    mino_collision(0, 2, 2, 3) = 0, 3, 3  // |  ■■|
+
+    mino_collision(0, 0, 3, 3) = 0, 3, 0  // |  ■  |
+    mino_collision(0, 1, 3, 3) = 3, 3, 0  // |■■  |
+    mino_collision(0, 2, 3, 3) = 3, 0, 0  // |■    |
+
+
+    mino_collision(0, 0, 0, 4) = 0, 0, 4  // |    ■|
+    mino_collision(0, 1, 0, 4) = 4, 4, 4  // |■■■|
+    mino_collision(0, 2, 0, 4) = 0, 0, 0  // |      |
+
+    mino_collision(0, 0, 1, 4) = 0, 4, 0  // |  ■  |
+    mino_collision(0, 1, 1, 4) = 0, 4, 0  // |  ■  |
+    mino_collision(0, 2, 1, 4) = 0, 4, 4  // |  ■■|
+
+    mino_collision(0, 0, 2, 4) = 0, 0, 0  // |      |
+    mino_collision(0, 1, 2, 4) = 4, 4, 4  // |■■■|
+    mino_collision(0, 2, 2, 4) = 4, 0, 0  // |■    |
+
+    mino_collision(0, 0, 3, 4) = 4, 4, 0  // |■■  |
+    mino_collision(0, 1, 3, 4) = 0, 4, 0  // |  ■  |
+    mino_collision(0, 2, 3, 4) = 0, 4, 0  // |  ■  |
+
+
+
+    									  // Jミノ
+
+    mino_collision(0, 0, 0, 5) = 5, 0, 0  // |■    |
+    mino_collision(0, 1, 0, 5) = 5, 5, 5  // |■■■|
+    mino_collision(0, 2, 0, 5) = 0, 0, 0  // |      |
+
+    mino_collision(0, 0, 1, 5) = 0, 5, 5  // |  ■■|
+    mino_collision(0, 1, 1, 5) = 0, 5, 0  // |  ■  |
+    mino_collision(0, 2, 1, 5) = 0, 5, 0  // |  ■  |
+
+    mino_collision(0, 0, 2, 5) = 0, 0, 0  // |      |
+    mino_collision(0, 1, 2, 5) = 5, 5, 5  // |■■■|
+    mino_collision(0, 2, 2, 5) = 0, 0, 5  // |    ■|
+
+    mino_collision(0, 0, 3, 5) = 0, 5, 0  // |  ■  |
+    mino_collision(0, 1, 3, 5) = 0, 5, 0  // |  ■  |
+    mino_collision(0, 2, 3, 5) = 5, 5, 0  // |■■  |
+
+
+
+    									     // Iミノ
+
+    mino_collision(0, 0, 0, 6) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 1, 0, 6) = 6, 6, 6, 6  // |■■■■|
+    mino_collision(0, 2, 0, 6) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 3, 0, 6) = 0, 0, 0, 0  // |        |
+
+    mino_collision(0, 0, 1, 6) = 0, 0, 6, 0  // |    ■  |
+    mino_collision(0, 1, 1, 6) = 0, 0, 6, 0  // |    ■  |
+    mino_collision(0, 2, 1, 6) = 0, 0, 6, 0  // |    ■  |
+    mino_collision(0, 3, 1, 6) = 0, 0, 6, 0  // |    ■  |
+
+    mino_collision(0, 0, 2, 6) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 1, 2, 6) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 2, 2, 6) = 6, 6, 6, 6  // |■■■■|
+    mino_collision(0, 3, 2, 6) = 0, 0, 0, 0  // |        |
+
+    mino_collision(0, 0, 3, 6) = 0, 6, 0, 0  // |  ■    |
+    mino_collision(0, 1, 3, 6) = 0, 6, 0, 0  // |  ■    |
+    mino_collision(0, 2, 3, 6) = 0, 6, 0, 0  // |  ■    |
+    mino_collision(0, 3, 3, 6) = 0, 6, 0, 0  // |  ■    |
+
+
+
+    									     // Oミノ
+
+    mino_collision(0, 0, 0, 7) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 1, 0, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 2, 0, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 3, 0, 7) = 0, 0, 0, 0  // |        |
+
+    mino_collision(0, 0, 1, 7) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 1, 1, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 2, 1, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 3, 1, 7) = 0, 0, 0, 0  // |        |
+
+    mino_collision(0, 0, 2, 7) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 1, 2, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 2, 2, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 3, 2, 7) = 0, 0, 0, 0  // |        |
+
+    mino_collision(0, 0, 3, 7) = 0, 0, 0, 0  // |        |
+    mino_collision(0, 1, 3, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 2, 3, 7) = 0, 7, 7, 0  // |  ■■  |
+    mino_collision(0, 3, 3, 7) = 0, 0, 0, 0  // |        |
+
+
+    // 画像読み込み
+    buffer 1
+    picload "images/sprite_4x.png"        // ミノ
+    buffer 2
+    picload "images/sprite_4x_trans.png"  // ミノのghost
+
+    // 音声読み込み
+	dmmload "sound/tetris.wav", 0, 1  // BGM
+	dmmload "sound/clear.wav", 1      // ライン消去
+	dmmload "sound/fall.wav", 2       // 落下
+	dmmload "sound/gameover.wav", 3   // ゲームオーバー
+
+    //メインウィンドウ
+    screen 0, wx, wy
+
+//スタート -----
+*start
+	gosub *reset     // 初期化
+	gosub *play_bgm  // bgm スタート
+	gosub *get_new_mino
+    repeat
+        redraw 0     // 画面描画をいったん止める
+                     // これがないと、画面を更新してる途中も表示されるのでちらつく
+
+    	gosub *refresh_screen  // 画面を黒塗りする
+
+    	current_frame = current_frame + 1 // フレーム数を増やす
+
+        gosub *key_input       // key入力受け付け
+
+    	if clearing == 1 {     // ラインを消しているアニメーション
+	    	gosub *clear
+	    } else: if game_over == 0 { // 列が消えるエフェクトの途中じゃなくてゲームオーバーじゃないなら、ゲームを進める
+	        gosub *move_with_key     // 移動
+	        gosub *rotate_with_key   // 回転
+	    	gosub *fall              // 自然落下
+		}
+		gosub *draw_background       // 背景描画
+		gosub *draw_field            // プレイ領域描画
+		gosub *draw_next             // 次のミノ描画
+		gosub *draw_hold             // ホールド描画
+
+		if game_over == 1{
+			gosub *draw_game_over  // ゲームオーバー
+		} else {
+			gosub *draw_ghost            // ゴースト表示
+			gosub *draw_current_mino     // 操作中のミノ描画
+		}
+
+        await await_time
+        redraw 1     // 画面描画を有効に
+    loop
+    end
+
+*reset  // 初期化
+	randomize
+
+    // フレーム関係
+    current_frame = 0
+    next_fall_frame = 0
+    next_input_frame = 0
+    clearing_start_frame = 0
+    input_start_frame = 0
+
+    // フラグ
+    game_over = 0
+    clearing = 0
+
+    // スコア
+    score = 0
+    combo_counter = 0
+    total_line = 0
+    gosub *load_high_score
+    
+    level = 0
+    level_color = 0
+    
+    did_spin = 0
+    
+    is_previous_difficult = 0
+    previous_action = ""
+    previous_action_score = 0
+    is_back_to_back = 0
+
+    // ラインを消す関係
+    clear_line = 0
+    clearing_line = -1, -1, -1, -1
+
+    // 入力
+	input_rotate = 0
+    input_direction = 0
+    previous_input = 0
+
+    // ミノ
+    current_mino = 0
+    current_mino_x = mino_start_x
+    current_mino_y = -1
+
+    lock_down_count = 15
+    lock_down_lowest = -2
+
+    current_direction = 0
+
+    repeat playfield_width
+    	set_brick_x = cnt
+    	repeat playfield_height
+    		field_matrix(set_brick_x, cnt) = 0
+    	loop
+    loop
+
+	is_hold_used = 0
+
+    mino_pool_index = 0
+    gosub *shuffle_mino_pool
+
+    upcoming_mino = 0, 0
+    gosub *add_upcoming_mino
+
+    return
+
+// #----------------------------------------# 描画 #----------------------------------------#
+
+*refresh_screen  // 画面を黒塗りする
+	pos 0, 0
+	color 0, 0, 0
+	boxf 0, 0, wx, wy
+	return
+
+*draw_background  // 背景描画
+    // プレイ領域の両端に線を書く
+	color 166, 255, 241
+	boxf playfield_x - 5 - mino_line_width * 2, 0, playfield_x - mino_line_width * 2, wy
+	boxf playfield_x + block_size * playfield_width, 0, playfield_x + block_size * playfield_width + 5, wy
+
+
+    // テキスト表示
+	font "ＭＳ ゴシック", 30, 1
+	color 255, 255, 255
+    pos 45, 50
+    mes "HOLD"
+
+    pos 45, 250
+    mes "NEXT"
+
+	font "ＭＳ ゴシック", 20, 1
+    pos block_size * playfield_width + 200, 50
+    mes "TOP"
+    pos block_size * playfield_width + 200, 80
+    mes high_score
+
+    pos block_size * playfield_width + 200, 140
+    mes "SCORE"
+    pos block_size * playfield_width + 200, 170
+    mes score
+
+    pos block_size * playfield_width + 200, 230
+    mes "LINE"
+    pos block_size * playfield_width + 200, 260
+    mes total_line
+
+    pos block_size * playfield_width + 200, 320
+    mes "LEVEL"
+    pos block_size * playfield_width + 200, 350
+    mes level
+
+    pos block_size * playfield_width + 200, 410
+    mes "COMBO"
+    pos block_size * playfield_width + 200, 440
+    mes combo_counter
+
+    if is_back_to_back {
+        pos block_size * playfield_width + 200, 500
+        mes "BACK-TO-BACK"
+    }
+
+    if previous_action != "" {
+        pos block_size * playfield_width + 200, 530
+        mes "NICE!"
+        pos block_size * playfield_width + 200, 560
+        mes previous_action
+        pos block_size * playfield_width + 200, 590
+        mes "+" + previous_action_score
+    }
+
+
+	// NEXT, HOLDのミノに枠線を付ける
+	color 166, 255, 241
+	__x = 10
+	__y = 80
+	__x_ = 145
+	__y_ = 180
+	boxf __x, __y, __x_, __y_
+
+	color 0, 0, 0
+	boxf __x + mino_line_width, __y + mino_line_width, __x_ - mino_line_width, __y_ - mino_line_width
+
+
+	color 166, 255, 241
+	__x = 10
+	__y = 280
+	__x_ = 145
+	__y_ = 380
+	boxf __x, __y, __x_, __y_
+
+	color 0, 0, 0
+	boxf __x + mino_line_width, __y + mino_line_width, __x_ - mino_line_width, __y_ - mino_line_width
+
+	color 166, 255, 241
+	__x = 10
+	__y = 380
+	__x_ = 145
+	__y_ = 480
+	boxf __x, __y, __x_, __y_
+
+	color 0, 0, 0
+	boxf __x + mino_line_width, __y + mino_line_width, __x_ - mino_line_width, __y_ - mino_line_width
+
+
+    // グリッド
+	color 50, 50, 50
+    repeat playfield_width
+        line playfield_x + cnt * block_size - mino_line_width, 0 - mino_line_width, playfield_x + cnt * block_size - mino_line_width, wy - mino_line_width
+    loop
+    repeat playfield_height
+        line playfield_x - mino_line_width, cnt * block_size - mino_line_width, playfield_x + playfield_width * block_size - mino_line_width, cnt * block_size - mino_line_width
+    loop
+
+    return
+
+*draw_game_over  // ゲームオーバー
+	font "ＭＳ ゴシック", 50, 7
+	color 255, 39, 255
+    pos game_over_x + glitch_diff, game_over_y + glitch_diff
+    mes "GAME OVER"
+
+	color 0, 231, 1
+    pos game_over_x - glitch_diff, game_over_y - glitch_diff
+    mes "GAME OVER"
+
+	color 255, 255, 255
+    pos game_over_x, game_over_y
+    mes "GAME OVER"
+    return
+
+*draw_next  // 次のミノを描画
+	foreach upcoming_mino
+		_mino = upcoming_mino(cnt)
+		_x = 30
+		_y = 300 + 100 * cnt
+		if _mino > 5{
+			_x = _x - 15
+			_y = _y - 30
+		}
+
+		draw_mino _x, _y, _mino, 0
+	loop
+	return
+
+*draw_hold  // ホールドされてるミノを描画
+	_x = 30
+	_y = 100
+	if holding_mino > 5{
+		_x = _x - 15
+		_y = _y - 30
+	}
+
+	draw_mino _x, _y, holding_mino, 0
+	return
+
+*draw_current_mino  // 操作中のミノを描画
+	draw_mino playfield_x + block_size * current_mino_x, block_size * current_mino_y, current_mino, current_direction
+	return
+
+
+*draw_ghost  // ghost を描画
+	if current_mino != 0 {
+		_current_mino_y = current_mino_y  // field_matrixと衝突するまでyを下げていき、当たったらやめる
+		while check_collision(current_mino_x, _current_mino_y + 1, current_direction) == 0
+				_current_mino_y = _current_mino_y + 1
+		wend
+
+		draw_mino playfield_x + block_size * current_mino_x, block_size * _current_mino_y, current_mino + 8, current_direction
+
+	}
+	return
+
+
+*draw_field  // プレイ領域を描画
+    repeat playfield_width
+    	_brick_x = cnt
+    	repeat playfield_height
+    		_block_type = field_matrix(_brick_x, cnt)
+    		_c = cnt
+    		if _block_type != 0 {
+				draw_block playfield_x + (block_size * _brick_x), block_size * cnt, _block_type
+	    	}
+    	loop
+    loop
+	return
+
+
+// #----------------------------------------# キー入力 #----------------------------------------#
+
+*key_input
+    // input_direction 0=無し, 1=上, 2=右, 3=左, 4=下
+    input_direction = 0
+    _kk = 0
+    _Q = 0
+    _E = 0
+
+	stick _kk, 31   // 矢印キー
+	getkey _Q, 81   // [ Q ]
+	getkey _E, 69   // [ E ]
+
+	if _kk | _Q | _E {
+		if input_start_frame == 0{  // input_start_frame==0(連続入力でない) なら input_start_frame に current_frame を代入
+			input_start_frame = current_frame
+		}
+
+		_accept_flag = (next_input_frame <= current_frame)
+		_accept_flag = _accept_flag | ((previous_input == (_kk | _Q | _E)) & ((current_frame - input_start_frame) \ 2 == 1) & ((current_frame - input_start_frame) > 5))
+		// 前回の入力から十分な時間が立っている
+		// もしくは、「前回の入力と同じ入力」 かつ 「最初の入力から2の倍数フレーム」 かつ 「最初の入力から5フレーム以上」
+		if _accept_flag {
+		    if _kk & 128 : end                     // [Esc]
+
+		    if _kk & 1 {                           // [←]
+			    input_direction = 3
+			    next_input_frame = current_frame + input_diff
+			}
+		    if _kk & 4 {                           // [→]
+			    input_direction = 2
+			    next_input_frame = current_frame + input_diff
+			}
+		    if (_kk & 10) == 2 {                   // [↑]
+			    input_direction = 1
+			    next_input_frame = current_frame + input_diff * 2  // ハードドロップは2倍待つ
+			    input_start_frame = 0                              // このキー入力は連続入力を受け付けない
+			}
+			if (_kk & 10) == 8 {                   // [↓]
+			    input_direction = 4
+			    next_input_frame = current_frame + input_diff / 2    // 落下はあんまり待たなくてOK
+			}
+			if _kk & 16 {                          // [ SPACE ]
+				gosub *try_hold                    // HOLDを試す
+			}
+
+			direction = 0
+			if _Q {
+				input_rotate = -1
+			    next_input_frame = current_frame + input_diff * 2  // 回転は2倍待つ
+			    input_start_frame = 0
+			} else: if _E {
+				input_rotate = 1
+		    	next_input_frame = current_frame + input_diff * 2  // 回転は2倍待つ
+		    	input_start_frame = 0
+
+				if game_over {
+					gosub *reset
+					gosub *play_bgm
+					gosub *get_new_mino
+				}
+			}
+		}
+	} else {
+		next_input_frame = 0
+		input_start_frame = 0
+	}
+	previous_input = (_kk | _Q | _E)               // キー入力を覚えておく
+	
+	getkey _kk, 82                                         // [ R ]
+	if _kk == 1 {                                          // Rキーでいつでも最初から
+		gosub *reset
+		gosub *get_new_mino
+	}
+    return
+
+
+*try_hold  // ホールド処理
+	if is_hold_used == 0 {                // ホールドを使ってない
+		is_hold_used = 1                  // 使用済みにする
+		if holding_mino == 0{             // どのミノもホールドしたことがないなら
+			current_mino_x = -5
+			current_mino_y = -5
+			holding_mino = current_mino
+			current_mino = 0
+			gosub *get_new_mino           // 今のミノをホールドし、新しく生成
+		} else {
+			tmp = holding_mino
+			holding_mino = current_mino
+			current_mino = tmp            // ホールドと今のミノを交換
+			current_mino_x = mino_start_x
+			gosub *init_mino
+		}
+
+	}
+	return
+
+
+*move_with_key  // キー入力に応じた移動
+	if current_mino != 0 & input_direction != 0 {  // ミノがあり、入力がある時
+		if input_direction == 1 {  // ↑キー
+			_st_y = current_mino_y
+			while check_collision(current_mino_x, current_mino_y + 1, current_direction) == 0
+					current_mino_y = current_mino_y + 1
+			wend  // 下のブロックに接地するまで降下
+
+			score = score + (current_mino_y - _st_y) * 2  // ハードドロップは落ちた距離 * 2 のスコア
+			next_fall_frame = current_frame  // すぐに落下処理
+		} else {
+			if input_direction == 3 {          // 左
+				_current_mino_x = current_mino_x - 1
+				_current_mino_y = current_mino_y
+			} else: if input_direction == 2 {  // 右
+				_current_mino_x = current_mino_x + 1
+				_current_mino_y = current_mino_y
+			} else: if input_direction == 4 {  // 下
+				_current_mino_x = current_mino_x
+				_current_mino_y = current_mino_y + 1
+			}
+			// _current_mino_x と _current_mino_y に移動先の座標を代入
+			// その座標でぶつかってないかチェック
+
+			if check_collision(_current_mino_x, _current_mino_y, current_direction) == 0 {
+				// ぶつかってなければその座標にセット
+				current_mino_x = _current_mino_x
+				current_mino_y = _current_mino_y
+				did_spin = 0   // 移動したら spin はしてないことにする
+
+				// すぐ下にブロックがあって、ロックダウンが有効な時
+                if check_collision(current_mino_x, current_mino_y + 1, current_direction) & lock_down_count > 0{
+                    next_fall_frame = current_frame + fall_time_level(level_color)  // 時間リセット
+                    lock_down_count = lock_down_count - 1                           // カウント減少
+                }
+
+				if (input_direction == 4) & (lock_down_lowest < current_mino_y) {   // ソフトドロップ
+                    score = score + 1                     // ソフトドロップは落ちた距離 * 1 のスコア
+                    next_fall_frame = current_frame + fall_time_level(level_color) // 落下したときは、自然落下時間をリセット
+                    lock_down_lowest = current_mino_y
+                    lock_down_count = 15                      // ロックダウンリセット
+                }
+			}
+		}
+	}
+	input_direction = 0  // 入力初期化
+	return
+
+*rotate_with_key
+	// スーパーローテーションシステム実装！
+	// https://tetrisch.github.io/main/srs.html
+	// マジアザス
+
+	if current_mino != 0 & input_rotate != 0 {  // ミノがある時のみ
+        did_spin = 0
+
+		_current_direction = (current_direction + 4 + input_rotate) \ 4  // 回転先の番号
+		_success = 0  // 回転が成功したか. ある段階で成功したらそれ以降の試行はやめ、その状態に変更する
+
+		if current_mino != 7 { // Iミノ以外
+			_x = current_mino_x
+			_y = current_mino_y
+
+			if check_collision(current_mino_x, current_mino_y, _current_direction) == 0 {  // その場で回れるならそのまま
+				_success = 1
+			}
+
+			if _success == 0 {  // 1. 軸を左右に動かす
+
+				if _current_direction == 0 | _current_direction == 2 {
+					_x = _x - input_rotate
+				} else: if _current_direction == 1 {
+					_x = _x - 1
+				} else {
+					_x = _x + 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 1  // did_spin はスピン番号
+				}
+			}
+
+			if _success == 0 {  // 2. その状態から軸を上下に動かす
+				if _current_direction == 0 | _current_direction == 2 {  // 1. 軸を左右に動かす
+					_y = _y + 1
+				} else {
+					_y = _y - 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 2
+				}
+			}
+
+			if _success == 0 {  // 3. 元に戻し，軸を上下に2マス動かす
+				_x = current_mino_x
+				_y = current_mino_y
+				if _current_direction == 0 | _current_direction == 2 {  // 1. 軸を左右に動かす
+					_y = _y - 2
+				} else {
+					_y = _y + 2
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 3
+				}
+			}
+
+			if _success == 0 {  // 4. その状態から軸を左右に動かす
+				if _current_direction == 0 | _current_direction == 2 {
+					_x = _x - input_rotate
+				} else: if _current_direction == 1 {
+					_x = _x - 1
+				} else {
+					_x = _x + 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 4
+				}
+			}
+		} else {               // Iミノ
+			_x = current_mino_x
+			_y = current_mino_y
+
+			if check_collision(current_mino_x, current_mino_y, _current_direction) == 0 {  // その場で回れるならそのまま
+				_success = 1
+			}
+
+			if _success == 0 {  // 1. 軸を左右に動かす
+
+				if _current_direction == 0 {
+					_x = _x - (input_rotate * 2)
+				} else: if _current_direction == 2{
+					_x = _x - input_rotate
+				} else: if _current_direction == 1 {
+					_x = _x + 1
+				} else {
+					_x = _x - 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 1
+				}
+			}
+
+			if _success == 0 {  // 2. 軸を左右に動かす
+				_x = current_mino_x
+				_y = current_mino_y
+				if _current_direction == 0 {
+					_x = _x + input_rotate
+				} else: if _current_direction == 2{
+					_x = _x + (input_rotate * 2)
+				} else: if _current_direction == 1 {
+					_x = _x - 1
+				} else {
+					_x = _x + 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 2
+				}
+			}
+
+			if _success == 0 {  // 3. 軸を上下に動かす
+				_x = current_mino_x
+				_y = current_mino_y
+
+				if current_direction == 1{  // _current_direction != 1 & _current_direction != 3
+						if _current_direction == 0 {  // 1
+							_x = _x - (input_rotate * 2)
+						} else: if _current_direction == 2{
+							_x = _x - input_rotate
+						}
+						_y = _y - 1
+				} else: if current_direction == 3 {  // _current_direction != 1 & _current_direction != 3
+						if _current_direction == 0 {  // 2
+							_x = _x + input_rotate
+						} else: if _current_direction == 2{
+							_x = _x + (input_rotate * 2)
+						}
+						_y = _y + 2
+				} else: if _current_direction == 1 {
+					_x = _x + 1
+					_y = _y + 1
+				} else {
+					_x = _x - 1
+					_y = _y - 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 3
+				}
+			}
+
+			if _success == 0 {  // 4.  軸を上下に動かす
+				_x = current_mino_x
+				_y = current_mino_y
+
+				if current_direction == 1{  // _current_direction != 1 & _current_direction != 3
+						if _current_direction == 0 {  // 2
+							_x = _x + input_rotate
+						} else: if _current_direction == 2{
+							_x = _x + (input_rotate * 2)
+						}
+						_y = _y + 1
+				} else: if current_direction == 3 {  // _current_direction != 1 & _current_direction != 3
+						if _current_direction == 0 {  // 1
+							_x = _x - (input_rotate * 2)
+						} else: if _current_direction == 2{
+							_x = _x - input_rotate
+						}
+						_y = _y - 2
+				} else: if _current_direction == 1 {
+					_x = _x - 1
+					_y = _y - 1
+				} else {
+					_x = _x + 1
+					_y = _y + 1
+				}
+
+				if check_collision(_x, _y, _current_direction) == 0 {
+					_success = 1
+					did_spin = 4
+				}
+			}
+		}
+		if _success == 1 {  // 成功したら
+		    did_spin = 1  // スピンをした
+			current_direction = _current_direction
+			current_mino_x = _x
+			current_mino_y = _y  // 位置変更
+
+
+			// ロックダウンが有効で、下にブロックがある場合
+            if lock_down_count > 0 & check_collision(current_mino_x, current_mino_y + 1, _current_direction) {
+                next_fall_frame = current_frame + fall_time_level(level_color)
+                lock_down_count = lock_down_count - 1  // ロックダウン実行
+            }
+            if lock_down_lowest < current_mino_y {  // 今までで一番低い点を更新したら
+                next_fall_frame = current_frame + fall_time_level(level_color) // 落下したときは、自然落下時間をリセット
+                lock_down_lowest = current_mino_y
+                lock_down_count = 15                   // ロックダウンの値リセット
+            }
+
+		}
+	}
+	input_rotate = 0  // 入力を初期化
+
+	return
+
+*place_block  // ブロック設置
+	repeat mino_type_size(current_mino)
+		_mino_x = cnt
+		repeat mino_type_size(current_mino)
+			// 「その座標にミノがある」 かつ 「プレイ領域内」 なら field_matrix に代入
+			if mino_collision(_mino_x, cnt, current_direction, current_mino) {
+				if (cnt + current_mino_y) >= 0 {
+					field_matrix(_mino_x + current_mino_x, cnt + current_mino_y) = current_mino
+				}
+			}
+		loop
+	loop
+	gosub *check_clear   // 消せるラインを確認
+	current_mino = 0
+	is_hold_used = 0
+	current_mino_x = -5
+	current_mino_y = -5  // ミノ情報初期化
+	gosub *get_new_mino  // 操作中のミノを新しく作る
+
+	return
+
+
+*fall  // 自由落下
+	if current_frame > next_fall_frame {  // 落下時間になったら
+        next_fall_frame = current_frame + fall_time_level(level_color)  // 次回の落下時間設定
+			if check_collision(current_mino_x, current_mino_y + 1, current_direction) == 0 {  // 下にブロックがない
+                current_mino_y = current_mino_y + 1
+                did_spin = 0  // 落下したら spin はしてないことに
+			    if lock_down_lowest < current_mino_y {  // 最低地点を更新したらロックダウンの値も更新
+                    lock_down_count = 15
+			    } else: if lock_down_count <= 0 {
+                    next_fall_frame = current_frame  // ロックダウンが無効なら、すぐまた落下させる
+                }
+			} else {  // 下にブロックがある
+			    lock_down_count = 15
+			    lock_down_lowest = -2
+				gosub *play_fall        // 落下音
+				gosub *place_block      // ブロック設置
+				gosub *check_game_over  // ゲームオーバー判定
+			}
+	}
+	return
+
+*shuffle_mino_pool  // ミノの配列をシャッフルする
+    mx = length(mino_pool)
+    repeat mx
+        r        = cnt + rnd(mx - cnt)
+        temp     = mino_pool(r)
+        mino_pool(r)   = mino_pool(cnt)
+        mino_pool(cnt) = temp
+    loop
+    return
+
+*check_clear  // 消えるラインを確認
+	repeat playfield_height
+		_y = cnt
+		_clear_this_line = 1
+		repeat playfield_width
+			if field_matrix(cnt, _y) == 0 {
+				_clear_this_line = 0
+				break
+			}
+		loop
+		if _clear_this_line == 1 {  // そのラインに全部ブロックが詰まってたら
+			foreach clearing_line
+				if clearing_line(cnt) == -1 {
+					clearing_line(cnt) = _y    // clearing_line に列番号を保存
+					clearing_start_frame = current_frame  // 消去アニメーション開始フレーム
+					clearing = 1                    // フラグ成立
+					break
+				}
+			loop
+		}
+	loop
+	clear_line = 0  // 今消してるラインの総数
+	foreach clearing_line
+		if clearing_line(3-cnt) != -1 {
+			clear_line = 4-cnt
+			break
+		}
+	loop
+
+	if clear_line == 0 {  // ライン消去がなければコンボを0
+	    combo_counter = 0
+	}
+
+	gosub *calc_score // スコア計算
+
+	if clear_line != 0 {   // ライン消去があれば加算
+	    // 消去音を再生
+		gosub *play_clear
+	    combo_counter = combo_counter + 1
+	}
+
+
+	return
+
+*clear  // ライン消去アニメーション
+    // 何番目のブロックのアニメーションか
+	_diff = ((current_frame - clearing_start_frame) / clear_animation_per_block)
+
+	// 5ブロック目はプレイ領域のそとなので、終了
+	if _diff > 4 {
+		gosub *drop_clear  // ブロックを下に詰める
+		foreach clearing_line  // 消去関連の値を初期化
+			clearing_line(cnt) = -1
+			clearing = 0
+			clearing_start_frame = 0
+		loop
+	}
+
+	foreach clearing_line
+		if clearing_line(cnt) != -1 {  // 真ん中からブロックが消えるエフェクト
+			_y = clearing_line(cnt)
+			field_matrix(5+_diff, _y) = 0
+			field_matrix(4-_diff, _y) = 0
+		}
+	loop
+	return
+
+*drop_clear  // ブロックを下に詰める
+	_from_y_diff = 0
+	repeat playfield_height, 1
+		_to_y = playfield_height - cnt  // 下から走査
+
+		_copy_this_line = 0
+		while _copy_this_line == 0
+			_copy_this_line = 1
+			foreach clearing_line
+				if clearing_line(cnt) == _to_y - _from_y_diff {  // そのラインが消去対象であれば、コピー元のラインを上げる
+					_from_y_diff = _from_y_diff + 1
+					_copy_this_line = 0
+				}
+			loop
+		wend
+		_from_y = _to_y - _from_y_diff
+		if _from_y < 0: break  // コピー元が範囲外であれば無視
+
+		repeat playfield_width // コピーのラインからコピー
+				field_matrix(cnt, _to_y) = field_matrix(cnt, _from_y)
+		loop
+	loop
+	return
+
+*init_mino  // ミノを初期位置に配置
+	did_spin = 0 // spinをオフ
+	current_mino_x = mino_start_x
+	if current_mino == 7 {
+		current_mino_y = -2
+	} else {
+		current_mino_y = -1
+	}
+	return
+
+// #----------------------------------------# ミノ選択のロジック #----------------------------------------#
+
+*get_new_mino  // 新しくミノを操作状態にする
+	current_mino = upcoming_mino(0)
+	upcoming_mino(0) = upcoming_mino(1)
+	upcoming_mino(1) = 0
+
+	gosub *add_upcoming_mino
+	gosub *init_mino
+
+	return
+
+
+*add_upcoming_mino  // ミノを「次のミノ」に追加する
+	foreach upcoming_mino
+		if upcoming_mino(cnt) == 0 {
+			upcoming_mino(cnt) = mino_pool(mino_pool_index)
+			mino_pool_index = mino_pool_index + 1
+			
+            if mino_pool_index == 7 {  // 最後まで一覧から取ったら、またシャッフル
+                gosub *shuffle_mino_pool
+                mino_pool_index == 0
+            }
+		}
+	loop
+	return
+
+
+// #----------------------------------------# スコア・終了判定 #----------------------------------------#
+
+*save_high_score  // ハイスコア保存
+	notesel data
+
+	noteadd str(high_score), 0
+
+	notesave "high_score.txt"
+	return
+
+*load_high_score  // ハイスコア取得
+	exist "high_score.txt"
+	if strsize == -1 {
+		high_score = 0
+		return
+	}
+
+	notesel data
+
+	noteload "high_score.txt"
+
+	high_score = int(data)
+
+	return
+
+
+*check_game_over  // ゲームオーバー判定
+	if check_collision(current_mino_x, current_mino_y, 0) {
+			game_over = 1
+			gosub *stop_sound
+			gosub *play_gameover
+
+			if score > high_score{
+				high_score = score
+				gosub *save_high_score
+			}
+	}
+	return
+
+
+*calc_score  // スコア計算
+    // https://tetris.wiki/Scoring
+    // このサイトのとおり実装
+    previous_action = ""  // 何もないかもしれない
+	dim basescore, 4
+	basescore = 100, 300, 500, 800  // 1列で100, 2列で300, 3列で500, 4列で800 をベースのスコアとする
+	sdim score_name, 4
+	score_name = "Single", "Double", "Triple", "Tetris"  // 消したラインごとの名前
+	_before_is_previous_difficult = is_previous_difficult
+
+	_is_tspin = is_Tspin()  // Tスピンかどうか
+
+	_score = 0
+
+	if (_is_tspin >= 3) | (clear_line == 4){  // back-to-back 開始
+		is_previous_difficult = 1
+	}
+
+	if _is_tspin == 1 {  // 各Tスピン状態ごとにスコア計算
+		_score = 100
+		previous_action = "T-Spin Mini no lines"
+	} else: if _is_tspin == 2 {
+		_score = 400
+		previous_action = "T-Spin no lines"
+	} else: if _is_tspin == 3 {
+		_score = 200
+		previous_action = "T-Spin Mini"
+	} else: if _is_tspin == 4 {
+		_score = 800
+		previous_action = "T-Spin Single"
+	} else: if _is_tspin == 5 {
+		_score = 1200
+		previous_action = "T-Spin Double"
+	} else: if _is_tspin == 6 {
+		_score = 1600
+		previous_action = "T-Spin Triple"
+	} else {                                  // T-spinじゃない
+        if clear_line != 0 {                  // ライン消去あり
+            if clear_line != 4 {              // back-to-back 終了
+                is_previous_difficult == 0
+            }
+            _score = basescore(clear_line-1)
+		    previous_action = score_name(clear_line-1)  // T-Spinじゃないときに名前せってい
+        }
+	}
+
+	_score = _score + (combo_counter * 50) // コンボスコア
+
+
+	is_back_to_back = _before_is_previous_difficult & is_previous_difficult
+	if is_back_to_back {  // back-to-back でスコア1.5倍
+	    _score = _score * 1.5
+	}
+    previous_action_score = _score * (level + 1) 
+
+	score = score + previous_action_score
+
+    total_line = total_line + clear_line
+
+	if level != (total_line/10){  // level は今まで消去したライン/10
+		level = (total_line/10)
+		level_color = level \ 10
+	}
+
+	return
+
+// #----------------------------------------# サウンド #----------------------------------------#
+
+*play_bgm
+	dmmplay 0
+	return
+
+*play_clear
+	dmmplay 1
+	return
+
+*play_fall
+	dmmplay 2
+	return
+
+*play_gameover
+	dmmplay 3
+	return
+
+*stop_sound
+	dmmstop
+	return
+
+
+// #----------------------------------------# 関数 #----------------------------------------#
+
+#defcfunc check_collision int arg_current_mino_x, int arg_current_mino_y, int arg_current_direction
+    // 指定する座標に指定する角度で現在のミノを置いたら重なるかどうか
+	_flag = 0
+	repeat mino_type_size(current_mino)
+		if _flag == 1: break
+		_mino_x = cnt
+		cc_x = _mino_x + arg_current_mino_x
+		repeat mino_type_size(current_mino)
+			if _flag == 1: break
+
+			_cnt = cnt
+			cc_y = _cnt + arg_current_mino_y
+			_exist = 0
+
+			if mino_collision(_mino_x, cnt, arg_current_direction, current_mino): _exist = 1
+
+			if _exist == 1{
+				if (cc_x < 0) | (playfield_width <= cc_x) | (playfield_height <= cc_y) {  // エリア外
+					_flag = 1
+					break
+				} else: if (cc_y >= 0) {
+					if field_matrix(cc_x, cc_y) != 0 { // 重なってる
+						_flag = 1
+						break
+					}
+				}
+			}
+
+		loop
+	loop
+	return _flag
+
+#deffunc draw_block int arg_x, int arg_y, int arg_block_type
+    // 指定した座標に指定したブロックを描画
+	pos arg_x, arg_y
+
+	_b_type = arg_block_type
+
+	gmode 1, block_size, block_size
+
+	if _b_type == 1 | _b_type == 6 | _b_type == 7 {
+		gcopy 1, 0, level_color * block_size
+	} else: if _b_type == 2 | _b_type == 5 {
+		gcopy 1, block_size, level_color * block_size
+	} else: if _b_type == 3 | _b_type == 4 {
+		gcopy 1, block_size * 2, level_color * block_size
+	} else{
+
+		pos arg_x - mino_line_width, arg_y - mino_line_width
+		_b_type = _b_type - 8
+		gmode 2, block_size, block_size
+		if _b_type == 1 | _b_type == 6 | _b_type == 7 {
+			gcopy 2, 0, level_color * block_size
+		} else: if _b_type == 2 | _b_type == 5 {
+			gcopy 2, block_size, level_color * block_size
+		} else: if _b_type == 3 | _b_type == 4 {
+			gcopy 2, block_size * 2, level_color * block_size
+		}
+	}
+	return
+
+#deffunc draw_mino int arg_mino_x, int arg_mino_y, int arg_mino_type, int arg_direction
+    // 指定した座標に指定した角度で指定したミノを描画
+	_arg_mino_type = arg_mino_type \ 8
+
+	gmode 1, block_size, block_size
+	repeat mino_type_size(_arg_mino_type)
+		__y = cnt
+		repeat mino_type_size(_arg_mino_type)
+			if mino_collision(cnt, __y, arg_direction, arg_mino_type \ 8) != 0{
+				draw_block arg_mino_x + (block_size * cnt), arg_mino_y + (block_size * __y), arg_mino_type
+			}
+		loop
+	loop
+	return
+
+#defcfunc is_Tspin  // 0=違う, 1=TspinMiniNoLines, 2=TspinNoLines, 3=TspinMini, 4=TspinSingle, 5=TspinDouble, 6=TspinTriple
+	// 直近の移動がT-Spinかどうか
+	// https://tetris-matome.com/judgment/
+	// 実装はここを手本にした
+	_result = 0
+
+	if did_spin & current_mino == 1 {  // 直近がスピンで、Tミノの時... Tspin判定
+	    covered_corner = 0    // 四隅のうち3つ以上埋まってればTspin
+	    fore_corner_filled = 1 // 背面が埋まっているかの確認
+
+        repeat 2
+            _x_diff = cnt
+            repeat 2
+                if current_mino_x == -1 | ((current_mino_x + _x_diff*2) >= playfield_width) {
+                    covered_corner = covered_corner + 1  // x軸がはみ出ている
+                    continue
+                }
+                if current_mino_y == -1 | ((current_mino_y + cnt*2) >= playfield_height) {
+                    covered_corner = covered_corner + 1  // y軸がはみ出ている
+                    continue
+                }
+                if field_matrix(current_mino_x + _x_diff*2, current_mino_y + cnt*2) {
+                    covered_corner = covered_corner + 1  // ブロックがある
+                    continue
+                }
+
+                if current_direction == 0 {
+                    if cnt == 0: fore_corner_filled = 0
+                } else: if current_direction == 1 {
+                    if _x_diff == 1: fore_corner_filled = 0
+                } else: if current_direction == 2 {
+                    if cnt == 1: fore_corner_filled = 0
+                } else: if current_direction == 3 {
+                    if _x_diff == 0: fore_corner_filled = 0
+                }
+            loop
+        loop
+
+        if covered_corner >= 3 {  // 3隅以上埋まってるのでTspin!
+        logmes "c_line: " + clear_line
+        	if clear_line == 0 {
+				if (fore_corner_filled == 0) & (did_spin != 4){  // 前面に空きがあり、4番目のスピンじゃない
+	                _result = 1  // Mini no lines
+	            }else{
+		            _result = 2  // no lines
+		        }
+	        } else: if (fore_corner_filled == 0) & (did_spin != 4){  // 前面に空きがあり、4番目のスピンじゃない. Mini Single
+                _result = 3
+            }else: if clear_line == 1{  // Single
+                _result = 4
+            } else: if clear_line == 2{  // Double
+                _result = 5
+            } else: if clear_line == 3{  // Triple
+                _result = 6
+            }
+        }
+	}
+	return _result
