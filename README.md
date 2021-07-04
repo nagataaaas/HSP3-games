@@ -17,8 +17,12 @@ Hot Soup Processor, The Japanese programming language for super beginners.
 - HardDrop
 - KeyHold
 
+<img src="https://github.com/nagataaaas/HSP3-games/blob/main/assets/tetris.gif?raw=true" alt="tetris" width="40%"/>
+
 ## Shooter
 ... shooter!
+
+<img src="https://github.com/nagataaaas/HSP3-games/blob/main/assets/shooter.gif?raw=true" alt="shooter" width="40%"/>
 
 > ### disclaimer
 > I DO NOT own any images, sound effects, musics in this repository.
