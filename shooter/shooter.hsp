@@ -337,6 +337,7 @@ dmmini                                                // プラグイン初期化
    	return
 
 *draw_start_screen     // タイトル画面
+	font "ＭＳ ゴシック", 50, 7
     draw_glitch title_x, title_y, "KOSEN SHOOTER"
 
     font "ＭＳ ゴシック", 22
@@ -357,11 +358,13 @@ dmmini                                                // プラグイン初期化
 
 *draw_game_over  // ゲームオーバー画面
 
-
     font "ＭＳ ゴシック", 22
+    
     if is_highscore_updated {  // ハイスコア更新で、オシャレに表示
         draw_glitch 250, 250, "NEW RECORD!!"
     }
+
+    
     pos 250, 300
     mes "SCORE:"
     pos 330, 300
@@ -759,7 +762,6 @@ dmmini                                                // プラグイン初期化
 // #----------------------------------------# 関数 #----------------------------------------#
 
 #deffunc draw_glitch int arg_x, int arg_y, str print_text      // 与えられた文字列を、与えられた座標にオシャレに描画
-    font "ＭＳ ゴシック", 50, 7
     color 255, 39, 255
     pos arg_x + glitch_diff, arg_y + glitch_diff
     mes print_text
